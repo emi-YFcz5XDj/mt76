@@ -1,7 +1,6 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
+/* SPDX-License-Identifier: BSD-3-Clause-Clear */
 /*
  * Copyright (C) 2016 Felix Fietkau <nbd@nbd.name>
- * Copyright (C) 2004 - 2009 Ivo van Doorn <IvDoorn@gmail.com>
  */
 
 #ifndef __MT76_UTIL_H
@@ -27,7 +26,12 @@ enum {
 #define MT76_INCR(_var, _size) \
 	(_var = (((_var) + 1) % (_size)))
 
-int mt76_wcid_alloc(u32 *mask, int size);
+int __mt76_wcid_alloc(u32 *mask, int min, int size);
+
+static inline int mt76_wcid_alloc(u32 *mask, int size)
+{
+       return __mt76_wcid_alloc(mask, 0, size);
+}
 
 static inline void
 mt76_wcid_mask_set(u32 *mask, int idx)

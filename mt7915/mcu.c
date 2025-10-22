@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: ISC
+// SPDX-License-Identifier: BSD-3-Clause-Clear
 /* Copyright (C) 2020 MediaTek Inc. */
 
 #include <linux/fs.h>
@@ -1359,6 +1359,7 @@ mt7915_mcu_get_mmps_mode(enum ieee80211_smps_mode smps)
 int mt7915_mcu_set_fixed_rate_ctrl(struct mt7915_dev *dev,
 				   struct ieee80211_vif *vif,
 				   struct ieee80211_sta *sta,
+				   struct mt76_wcid *wcid,
 				   void *data, u32 field)
 {
 	struct mt7915_vif *mvif = (struct mt7915_vif *)vif->drv_priv;
@@ -1430,7 +1431,7 @@ int mt7915_mcu_add_smps(struct mt7915_dev *dev, struct ieee80211_vif *vif,
 	if (ret)
 		return ret;
 
-	return mt7915_mcu_set_fixed_rate_ctrl(dev, vif, sta, NULL,
+	return mt7915_mcu_set_fixed_rate_ctrl(dev, vif, sta, &msta->wcid, NULL,
 					      RATE_PARAM_MMPS_UPDATE);
 }
 
@@ -1439,17 +1440,19 @@ mt7915_mcu_set_spe_idx(struct mt7915_dev *dev, struct ieee80211_vif *vif,
 		       struct ieee80211_sta *sta)
 {
 	struct mt7915_vif *mvif = (struct mt7915_vif *)vif->drv_priv;
+	struct mt7915_sta *msta = (struct mt7915_sta *)sta->drv_priv;
 	struct mt76_phy *mphy = mvif->phy->mt76;
 	u8 spe_idx = mt76_connac_spe_idx(mphy->antenna_mask);
 
-	return mt7915_mcu_set_fixed_rate_ctrl(dev, vif, sta, &spe_idx,
-					      RATE_PARAM_SPE_UPDATE);
+	return mt7915_mcu_set_fixed_rate_ctrl(dev, vif, sta, &msta->wcid,
+					      &spe_idx, RATE_PARAM_SPE_UPDATE);
 }
 
 static int
 mt7915_mcu_add_rate_ctrl_fixed(struct mt7915_dev *dev,
 			       struct ieee80211_vif *vif,
-			       struct ieee80211_sta *sta)
+			       struct ieee80211_sta *sta,
+			       struct mt76_wcid *wcid)
 {
 	struct mt7915_vif *mvif = (struct mt7915_vif *)vif->drv_priv;
 	struct cfg80211_chan_def *chandef = &mvif->phy->mt76->chandef;
@@ -1497,7 +1500,7 @@ mt7915_mcu_add_rate_ctrl_fixed(struct mt7915_dev *dev,
 
 	/* fixed single rate */
 	if (nrates == 1) {
-		ret = mt7915_mcu_set_fixed_rate_ctrl(dev, vif, sta, &phy,
+		ret = mt7915_mcu_set_fixed_rate_ctrl(dev, vif, sta, wcid, &phy,
 						     RATE_PARAM_FIXED_MCS);
 		if (ret)
 			return ret;
@@ -1519,7 +1522,7 @@ mt7915_mcu_add_rate_ctrl_fixed(struct mt7915_dev *dev,
 		else
 			mt76_rmw_field(dev, addr, GENMASK(15, 12), phy.sgi);
 
-		ret = mt7915_mcu_set_fixed_rate_ctrl(dev, vif, sta, &phy,
+		ret = mt7915_mcu_set_fixed_rate_ctrl(dev, vif, sta, wcid, &phy,
 						     RATE_PARAM_FIXED_GI);
 		if (ret)
 			return ret;
@@ -1527,7 +1530,7 @@ mt7915_mcu_add_rate_ctrl_fixed(struct mt7915_dev *dev,
 
 	/* fixed HE_LTF */
 	if (mask->control[band].he_ltf != GENMASK(7, 0)) {
-		ret = mt7915_mcu_set_fixed_rate_ctrl(dev, vif, sta, &phy,
+		ret = mt7915_mcu_set_fixed_rate_ctrl(dev, vif, sta, wcid, &phy,
 						     RATE_PARAM_FIXED_HE_LTF);
 		if (ret)
 			return ret;
@@ -1640,15 +1643,14 @@ mt7915_mcu_sta_rate_ctrl_tlv(struct sk_buff *skb, struct mt7915_dev *dev,
 }
 
 int mt7915_mcu_add_rate_ctrl(struct mt7915_dev *dev, struct ieee80211_vif *vif,
-			     struct ieee80211_sta *sta, bool changed)
+			     struct ieee80211_sta *sta, struct mt76_wcid *wcid,
+			     bool changed)
 {
 	struct mt7915_vif *mvif = (struct mt7915_vif *)vif->drv_priv;
-	struct mt7915_sta *msta = (struct mt7915_sta *)sta->drv_priv;
 	struct sk_buff *skb;
 	int ret;
 
-	skb = mt76_connac_mcu_alloc_sta_req(&dev->mt76, &mvif->mt76,
-					    &msta->wcid);
+	skb = mt76_connac_mcu_alloc_sta_req(&dev->mt76, &mvif->mt76, wcid);
 	if (IS_ERR(skb))
 		return PTR_ERR(skb);
 
@@ -1673,7 +1675,7 @@ int mt7915_mcu_add_rate_ctrl(struct mt7915_dev *dev, struct ieee80211_vif *vif,
 	 * and updates as peer fixed rate parameters, which overrides
 	 * sta_rec_ra and firmware rate control algorithm.
 	 */
-	return mt7915_mcu_add_rate_ctrl_fixed(dev, vif, sta);
+	return mt7915_mcu_add_rate_ctrl_fixed(dev, vif, sta, wcid);
 }
 
 static int
@@ -1704,8 +1706,9 @@ mt7915_mcu_add_group(struct mt7915_dev *dev, struct ieee80211_vif *vif,
 				 sizeof(req), true);
 }
 
-int mt7915_mcu_add_sta(struct mt7915_dev *dev, struct ieee80211_vif *vif,
-		       struct ieee80211_sta *sta, int conn_state, bool newly)
+int __mt7915_mcu_add_sta(struct mt7915_dev *dev, struct ieee80211_vif *vif,
+			 struct ieee80211_sta *sta, struct mt76_wcid *wcid,
+			 int conn_state, bool newly)
 {
 	struct mt7915_vif *mvif = (struct mt7915_vif *)vif->drv_priv;
 	struct ieee80211_link_sta *link_sta;
@@ -1716,8 +1719,10 @@ int mt7915_mcu_add_sta(struct mt7915_dev *dev, struct ieee80211_vif *vif,
 	msta = sta ? (struct mt7915_sta *)sta->drv_priv : &mvif->sta;
 	link_sta = sta ? &sta->deflink : NULL;
 
-	skb = mt76_connac_mcu_alloc_sta_req(&dev->mt76, &mvif->mt76,
-					    &msta->wcid);
+	if (!wcid)
+		wcid = &msta->wcid;
+
+	skb = mt76_connac_mcu_alloc_sta_req(&dev->mt76, &mvif->mt76, wcid);
 	if (IS_ERR(skb))
 		return PTR_ERR(skb);
 
@@ -2413,10 +2418,20 @@ int mt7915_mcu_init_firmware(struct mt7915_dev *dev)
 
 	mt76_connac_mcu_del_wtbl_all(&dev->mt76);
 
-	if ((mtk_wed_device_active(&dev->mt76.mmio.wed) &&
-	     is_mt7915(&dev->mt76)) ||
-	    !mtk_wed_get_rx_capa(&dev->mt76.mmio.wed))
-		mt7915_mcu_wa_cmd(dev, MCU_WA_PARAM_CMD(CAPABILITY), 0, 0, 0);
+#if IS_ENABLED(CONFIG_NET_MEDIATEK_SOC_WED)
+	if (mtk_wed_device_active(&dev->mt76.mmio.wed)) {
+		if (is_mt7915(&dev->mt76) ||
+		    !mtk_wed_get_rx_capa(&dev->mt76.mmio.wed))
+			ret = mt7915_mcu_wa_cmd(dev, MCU_WA_PARAM_CMD(CAPABILITY),
+			                        0, 0, 0);
+		else
+			ret = mt7915_mcu_wa_cmd(dev, MCU_WA_PARAM_CMD(SET),
+						MCU_WA_PARAM_WED_VERSION,
+						dev->mt76.mmio.wed.rev_id, 0);
+		if (ret)
+			return ret;
+	}
+#endif
 
 	ret = mt7915_mcu_set_mwds(dev, 1);
 	if (ret)
@@ -3336,7 +3351,8 @@ int mt7915_mcu_set_txpower_frame(struct mt7915_phy *phy,
 	int ret;
 	s8 txpower_sku[MT7915_SKU_RATE_NUM];
 
-	ret = mt7915_mcu_get_txpower_sku(phy, txpower_sku, sizeof(txpower_sku));
+	ret = mt7915_mcu_get_txpower_sku(phy, txpower_sku, sizeof(txpower_sku),
+					 TX_POWER_INFO_RATE);
 	if (ret)
 		return ret;
 
@@ -3376,51 +3392,136 @@ int mt7915_mcu_set_txpower_frame(struct mt7915_phy *phy,
 				 sizeof(req), true);
 }
 
+static void
+mt7915_update_txpower(struct mt7915_phy *phy, int tx_power)
+{
+	struct mt76_phy *mphy = phy->mt76;
+	struct ieee80211_channel *chan = mphy->main_chandef.chan;
+	int chain_idx, val, e2p_power_limit = 0;
+
+	if (!chan) {
+		mphy->txpower_cur = tx_power;
+		return;
+	}
+
+	for (chain_idx = 0; chain_idx < hweight16(mphy->chainmask); chain_idx++) {
+		val = mt7915_eeprom_get_target_power(phy->dev, chan, chain_idx);
+		val += mt7915_eeprom_get_power_delta(phy->dev, chan->band);
+
+		e2p_power_limit = max_t(int, e2p_power_limit, val);
+	}
+
+	if (phy->sku_limit_en)
+		mphy->txpower_cur = min_t(int, e2p_power_limit, tx_power);
+	else
+		mphy->txpower_cur = e2p_power_limit;
+}
+
 int mt7915_mcu_set_txpower_sku(struct mt7915_phy *phy)
 {
+#define TX_POWER_LIMIT_TABLE_RATE	0
+#define TX_POWER_LIMIT_TABLE_PATH	1
 	struct mt7915_dev *dev = phy->dev;
 	struct mt76_phy *mphy = phy->mt76;
 	struct ieee80211_hw *hw = mphy->hw;
-	struct mt7915_mcu_txpower_sku req = {
+	struct mt7915_sku_val {
+		u8 format_id;
+		u8 limit_type;
+		u8 band_idx;
+	} __packed hdr = {
 		.format_id = TX_POWER_LIMIT_TABLE,
+		.limit_type = TX_POWER_LIMIT_TABLE_RATE,
 		.band_idx = phy->mt76->band_idx,
 	};
-	struct mt76_power_limits limits_array;
-	s8 *la = (s8 *)&limits_array;
-	int i, idx;
-	int tx_power;
+	int i, ret, tx_power;
+	const u8 *len = mt7915_sku_group_len;
+	struct mt76_power_limits la = {};
+	struct sk_buff *skb;
 
 	tx_power = mt76_get_power_bound(mphy, hw->conf.power_level);
-	tx_power = mt76_get_rate_power_limits(mphy, mphy->chandef.chan,
-					      &limits_array, tx_power);
-	mphy->txpower_cur = tx_power;
-
-	for (i = 0, idx = 0; i < ARRAY_SIZE(mt7915_sku_group_len); i++) {
-		u8 mcs_num, len = mt7915_sku_group_len[i];
-		int j;
-
-		if (i >= SKU_HT_BW20 && i <= SKU_VHT_BW160) {
-			mcs_num = 10;
-
-			if (i == SKU_HT_BW20 || i == SKU_VHT_BW20)
-				la = (s8 *)&limits_array + 12;
-		} else {
-			mcs_num = len;
-		}
-
-		for (j = 0; j < min_t(u8, mcs_num, len); j++)
-			req.txpower_sku[idx + j] = la[j];
-
-		la += mcs_num;
-		idx += len;
+	if (phy->sku_limit_en) {
+		tx_power = mt76_get_rate_power_limits(mphy, mphy->chandef.chan,
+						      &la, tx_power);
+		mt7915_update_txpower(phy, tx_power);
+	} else {
+		mt7915_update_txpower(phy, tx_power);
+		return 0;
 	}
 
-	return mt76_mcu_send_msg(&dev->mt76,
-				 MCU_EXT_CMD(TX_POWER_FEATURE_CTRL), &req,
-				 sizeof(req), true);
+	skb = mt76_mcu_msg_alloc(&dev->mt76, NULL,
+				 sizeof(hdr) + MT7915_SKU_RATE_NUM);
+	if (!skb)
+		return -ENOMEM;
+
+	skb_put_data(skb, &hdr, sizeof(hdr));
+	skb_put_data(skb, &la.cck, len[SKU_CCK] + len[SKU_OFDM]);
+	skb_put_data(skb, &la.mcs[0], len[SKU_HT_BW20]);
+	skb_put_data(skb, &la.mcs[1], len[SKU_HT_BW40]);
+
+	/* vht */
+	for (i = 0; i < 4; i++) {
+		skb_put_data(skb, &la.mcs[i], sizeof(la.mcs[i]));
+		skb_put_zero(skb, 2);  /* padding */
+	}
+
+	/* he */
+	skb_put_data(skb, &la.ru[0], sizeof(la.ru));
+	ret = mt76_mcu_skb_send_msg(&dev->mt76, skb,
+				    MCU_EXT_CMD(TX_POWER_FEATURE_CTRL), true);
+	if (ret)
+		return ret;
+
+	/* only set per-path power table when it's configured */
+	if (!phy->sku_path_en)
+		return 0;
+
+	skb = mt76_mcu_msg_alloc(&dev->mt76, NULL,
+				 sizeof(hdr) + MT7915_SKU_PATH_NUM);
+	if (!skb)
+		return -ENOMEM;
+
+	hdr.limit_type = TX_POWER_LIMIT_TABLE_PATH;
+	skb_put_data(skb, &hdr, sizeof(hdr));
+	skb_put_data(skb, &la.path.cck, sizeof(la.path.cck));
+	skb_put_data(skb, &la.path.ofdm, sizeof(la.path.ofdm));
+	skb_put_data(skb, &la.path.ofdm_bf[1], sizeof(la.path.ofdm_bf) - 1);
+
+	/* HT20 and HT40 */
+	skb_put_data(skb, &la.path.ru[3], sizeof(la.path.ru[3]));
+	skb_put_data(skb, &la.path.ru_bf[3][1], sizeof(la.path.ru_bf[3]) - 1);
+	skb_put_data(skb, &la.path.ru[4], sizeof(la.path.ru[4]));
+	skb_put_data(skb, &la.path.ru_bf[4][1], sizeof(la.path.ru_bf[4]) - 1);
+
+	/* start from non-bf and bf fields of
+	 * BW20/RU242, BW40/RU484, BW80/RU996, BW160/RU2x996,
+	 * RU26, RU52, and RU106
+	 */
+
+	for (i = 0; i < 8; i++) {
+		bool bf = i % 2;
+		u8 idx = (i + 6) / 2;
+		s8 *buf = bf ? la.path.ru_bf[idx] : la.path.ru[idx];
+		/* The non-bf fields of RU26 to RU106 are special cases */
+		if (bf)
+			skb_put_data(skb, buf + 1, 9);
+		else
+			skb_put_data(skb, buf, 10);
+	}
+
+	for (i = 0; i < 6; i++) {
+		bool bf = i % 2;
+		u8 idx = i / 2;
+		s8 *buf = bf ? la.path.ru_bf[idx] : la.path.ru[idx];
+
+		skb_put_data(skb, buf, 10);
+	}
+
+	return mt76_mcu_skb_send_msg(&dev->mt76, skb,
+				     MCU_EXT_CMD(TX_POWER_FEATURE_CTRL), true);
 }
 
-int mt7915_mcu_get_txpower_sku(struct mt7915_phy *phy, s8 *txpower, int len)
+int mt7915_mcu_get_txpower_sku(struct mt7915_phy *phy, s8 *txpower, int len,
+			       u8 category)
 {
 #define RATE_POWER_INFO	2
 	struct mt7915_dev *dev = phy->dev;
@@ -3431,10 +3532,9 @@ int mt7915_mcu_get_txpower_sku(struct mt7915_phy *phy, s8 *txpower, int len)
 		u8 _rsv;
 	} __packed req = {
 		.format_id = TX_POWER_LIMIT_INFO,
-		.category = RATE_POWER_INFO,
+		.category = category,
 		.band_idx = phy->mt76->band_idx,
 	};
-	s8 txpower_sku[MT7915_SKU_RATE_NUM][2];
 	struct sk_buff *skb;
 	int ret, i;
 
@@ -3444,9 +3544,15 @@ int mt7915_mcu_get_txpower_sku(struct mt7915_phy *phy, s8 *txpower, int len)
 	if (ret)
 		return ret;
 
-	memcpy(txpower_sku, skb->data + 4, sizeof(txpower_sku));
-	for (i = 0; i < len; i++)
-		txpower[i] = txpower_sku[i][req.band_idx];
+	if (category == TX_POWER_INFO_RATE) {
+		s8 res[MT7915_SKU_RATE_NUM][2];
+
+		memcpy(res, skb->data + 4, sizeof(res));
+		for (i = 0; i < len; i++)
+			txpower[i] = res[i][req.band_idx];
+	} else if (category == TX_POWER_INFO_PATH) {
+		memcpy(txpower, skb->data + 4, len);
+	}
 
 	dev_kfree_skb(skb);
 
@@ -3475,7 +3581,7 @@ int mt7915_mcu_set_test_param(struct mt7915_dev *dev, u8 param, bool test_mode,
 				 sizeof(req), false);
 }
 
-int mt7915_mcu_set_sku_en(struct mt7915_phy *phy, bool enable)
+int mt7915_mcu_set_sku_en(struct mt7915_phy *phy)
 {
 	struct mt7915_dev *dev = phy->dev;
 	struct mt7915_sku {
@@ -3484,10 +3590,21 @@ int mt7915_mcu_set_sku_en(struct mt7915_phy *phy, bool enable)
 		u8 band_idx;
 		u8 rsv;
 	} __packed req = {
-		.format_id = TX_POWER_LIMIT_ENABLE,
 		.band_idx = phy->mt76->band_idx,
-		.sku_enable = enable,
 	};
+	int ret;
+
+	req.sku_enable = phy->sku_limit_en;
+	req.format_id = TX_POWER_LIMIT_ENABLE;
+
+	ret = mt76_mcu_send_msg(&dev->mt76,
+				MCU_EXT_CMD(TX_POWER_FEATURE_CTRL), &req,
+				sizeof(req), true);
+	if (ret)
+		return ret;
+
+	req.sku_enable = phy->sku_path_en;
+	req.format_id = TX_POWER_LIMIT_PATH_ENABLE;
 
 	return mt76_mcu_send_msg(&dev->mt76,
 				 MCU_EXT_CMD(TX_POWER_FEATURE_CTRL), &req,
